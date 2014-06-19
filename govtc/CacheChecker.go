@@ -32,9 +32,11 @@ func NewCacheChecker(apiKey string, databasePath string) *CacheChecker {
 	return c
 }
 
-func (c CacheChecker) ProcessFile(hashChannel chan *VtRecord, inputFile string, mode int) {
-	c.workQueue = make(chan BatchCheck, 1000)
+func (c CacheChecker) ProcessFile(hashChannel chan *VtRecord,
+								  inputFile string,
+								  mode int) {
 
+	c.workQueue = make(chan BatchCheck, 1000)
 	c.startDispatcher(2, c.databasePath, c.apiKey)
 
 	// Open the database containing our VT data
@@ -92,7 +94,10 @@ func (c CacheChecker) ProcessFile(hashChannel chan *VtRecord, inputFile string, 
 	}
 }
 
-func (c CacheChecker)startDispatcher(workerCount int, databasePath string, apiKey string) {
+func (c CacheChecker)startDispatcher(workerCount int,
+									 databasePath string,
+									 apiKey string) {
+
 	// First, initialize the channel we are going to but the workers' work channels into.
 	c.workerQueue = make(chan chan BatchCheck, workerCount)
 
@@ -121,7 +126,10 @@ func (c CacheChecker)startDispatcher(workerCount int, databasePath string, apiKe
 }
 
 //
-func isHashInDatabase(stmtMd5 *sql.Stmt, stmtSha265 *sql.Stmt, hash string) (*VtRecord, error) {
+func isHashInDatabase(stmtMd5 *sql.Stmt,
+					  stmtSha265 *sql.Stmt,
+					  hash string) (*VtRecord, error) {
+
 	vtRecord := new(VtRecord)
 	if len(hash) == 32 {
 		err := stmtMd5.QueryRow(hash).Scan(&vtRecord.Id,
