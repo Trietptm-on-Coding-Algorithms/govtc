@@ -15,6 +15,8 @@ import (
 	"path"
 )
 
+// ##### Types #########################################################################################################
+
 type Options struct {
 	Hash   		string        	`goptions:"-h, --hash, description='A single hash (MD5 or SHA256)'"`
 	File   		string        	`goptions:"-f, --file, description='File containing hashes'"`
@@ -27,19 +29,15 @@ type Options struct {
 	configFile 	string
 }
 
-const DATABASE_FILE_NAME string  = "govtc.db"
-const CONFIG_FILE_NAME string  = "govtc.config"
-
-const (
-	MODE_CACHE = 1
-	MODE_DB = 2
-	MODE_LIVE = 3
-)
+// ##### Variables #####################################################################################################
 
 var (
 	options 		*Options
 	cacheChecker 	*govtc.CacheChecker
+	hashChannel		chan *govtc.VtRecord
 )
+
+// ##### Methods #######################################################################################################
 
 func main() {
 	options = new(Options)
@@ -53,8 +51,8 @@ func main() {
 		options.Delimiter = ","
 	}
 
-	options.Database = path.Join(options.Database, DATABASE_FILE_NAME)
-	options.configFile = path.Join(".", CONFIG_FILE_NAME)
+	options.Database = path.Join(options.Database, govtc.DATABASE_FILE_NAME)
+	options.configFile = path.Join(".", govtc.CONFIG_FILE_NAME)
 
 	// The user hasn't supplied an APIKEY so load from the config file
 	if len(options.ApiKey) == 0 {
@@ -75,14 +73,14 @@ func main() {
 		options.Mode = "c"
 	}
 
-	mode := MODE_CACHE
+	mode := govtc.MODE_CACHE
 	switch options.Mode {
 	case "c":
-		mode = MODE_CACHE
+		mode = govtc.MODE_CACHE
 	case "d":
-		mode = MODE_DB
+		mode = govtc.MODE_DB
 	case "l":
-		mode = MODE_LIVE
+		mode = govtc.MODE_LIVE
 	default:
 		fmt.Println("Invalid mode e.g. c = caching, d = database only, l = live")
 		return
@@ -105,12 +103,14 @@ func main() {
 		}
 	}
 
+	hashChannel = make(chan *govtc.VtRecord)
+
 	cacheChecker = govtc.NewCacheChecker(options.ApiKey, options.Database)
 
 	if len(strings.TrimSpace(options.File)) > 0 {
-		cacheChecker.ProcessFile(options.File, mode)
+		cacheChecker.ProcessFile(hashChannel, options.File, mode)
 	} else {
-		cacheChecker.ProcessFile(options.Hash, mode)
+		//cacheChecker.ProcessFile(options.Hash, mode)
 	}
 
 	/*
@@ -121,9 +121,20 @@ func main() {
 	fmt.Println( usr.HomeDir )*/
 }
 
+func ReadHashes(hashChannel chan *govtc.VtRecord){
+	go func() {
+		for {
+			vtRecord := <-hashChannel
+
+			fmt.Println(vtRecord.Md5)
+		}
+	}()
+}
+
 // Reads the first line from the specified file
 func ReadApiKey(configFilePath string) string {
 	file, _ := os.Open(configFilePath)
+	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	apiKey := ""
 	for scanner.Scan() {
