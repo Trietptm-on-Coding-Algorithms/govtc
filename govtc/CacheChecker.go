@@ -37,8 +37,6 @@ func NewCacheChecker(apiKey string, databasePath string) *CacheChecker {
 func (cc *CacheChecker) ProcessFile(hashChannel chan *VtRecord,
 								    inputFile string,
 								    mode int) {
-
-	//c.workQueue = make(chan BatchCheck, 1000)
 	cc.startDispatcher(2, cc.databasePath, cc.apiKey)
 
 	fmt.Println("Opening database: " + cc.databasePath)
@@ -215,6 +213,50 @@ func (c *CacheChecker) process(ftr govt.FileReportResults) {
 		fmt.Println(fr.Md5)
 	}
 	c.waitGroup.Done()
+
+
+//	if (report.ResponseCode == 0)
+//	{
+//		// The hash wasn't in VT
+//		Hash temp = new Hash();
+//		temp.Md5 = report.Resource;
+//		temp.Response = 0;
+//		OnHashChecked(temp);
+//		continue;
+//	}
+//
+//	var ret = _db.SingleOrDefault<Hash>("WHERE Md5 = @0", report.Md5);
+//	if (ret == null)
+//	{
+//		Hash temp = new Hash();
+//		temp.Md5 = report.Md5;
+//		temp.Sha256 = report.Sha256;
+//		temp.Positive = report.Positives;
+//		temp.Total = report.Total;
+//		temp.Permalink = report.Permalink;
+//		temp.ScanDate = report.ScanDate;
+//		temp.Response = (byte)report.ResponseCode;
+//		temp.UpdateDate = DateTime.Now;
+//		temp.Scans = Functions.GenerateScansString(report);
+//
+//		_db.Insert(temp);
+//		OnHashChecked(temp);
+//	}
+//	else
+//{
+//	ret.Positive = report.Positives;
+//	ret.Md5 = report.Md5;
+//	ret.Sha256 = report.Sha256;
+//	ret.Total = report.Total;
+//	ret.Permalink = report.Permalink;
+//	ret.ScanDate = report.ScanDate;
+//	ret.Response = (byte)report.ResponseCode;
+//	ret.Scans = Functions.GenerateScansString(report);
+//	ret.UpdateDate = DateTime.Now;
+//
+//	_db.Update(ret);
+//	OnHashChecked(ret);
+//}
 }
 
 
@@ -222,9 +264,6 @@ func (c *CacheChecker) process(ftr govt.FileReportResults) {
 func isHashInDatabase(stmtMd5 *sql.Stmt,
 					  stmtSha265 *sql.Stmt,
 					  hash string) (*VtRecord, error) {
-
-	fmt.Println(hash)
-
 	vtRecord := new(VtRecord)
 	if len(hash) == 32 {
 		err := stmtMd5.QueryRow(hash).Scan(&vtRecord.Id,
