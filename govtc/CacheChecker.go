@@ -5,20 +5,22 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	_"time"
+	"sync"
 	"strings"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/williballenthin/govt"
 )
 
-type BatchCheck struct {
-	Hashes []string
-}
-
 type CacheChecker struct {
-	apiKey 			string
-	databasePath 	string
-	checkLimit		int
-	workQueue		chan BatchCheck
-	workerQueue 	chan chan BatchCheck
+	apiKey      	string
+	databasePath    string
+	checkLimit      int
+	tasksQueue      chan BatchData
+	resultsQueue    chan govt.FileReportResults
+	workerQueue     chan *VtChecker
+	quit 			chan bool
+	waitGroup       sync.WaitGroup
 }
 
 const SQL_SELECT_MD5 string = "SELECT id, md5, sha256, positives, total, permalink, responsecode, scans, scandate, updatedate from vthashes where md5 = ?"
@@ -32,15 +34,17 @@ func NewCacheChecker(apiKey string, databasePath string) *CacheChecker {
 	return c
 }
 
-func (c CacheChecker) ProcessFile(hashChannel chan *VtRecord,
-								  inputFile string,
-								  mode int) {
+func (cc *CacheChecker) ProcessFile(hashChannel chan *VtRecord,
+								    inputFile string,
+								    mode int) {
 
-	c.workQueue = make(chan BatchCheck, 1000)
-	c.startDispatcher(2, c.databasePath, c.apiKey)
+	//c.workQueue = make(chan BatchCheck, 1000)
+	cc.startDispatcher(2, cc.databasePath, cc.apiKey)
+
+	fmt.Println("Opening database: " + cc.databasePath)
 
 	// Open the database containing our VT data
-	db, err := sql.Open("sqlite3", c.databasePath)
+	db, err := sql.Open("sqlite3", cc.databasePath)
 	defer db.Close()
 	if err != nil {
 		// Error? callback?
@@ -50,13 +54,13 @@ func (c CacheChecker) ProcessFile(hashChannel chan *VtRecord,
 	// Prepare the SQL statements
 	stmtMd5, err := db.Prepare(SQL_SELECT_MD5)
 	if err != nil {
-		// Error?
+		fmt.Println("MD5 statement error: " + err.Error())
 	}
 	defer stmtMd5.Close()
 
 	stmtSha256, err := db.Prepare(SQL_SELECT_SHA256)
 	if err != nil {
-		// Error?
+		fmt.Println("SHA256 statement error: " + err.Error())
 	}
 	defer stmtSha256.Close()
 
@@ -64,71 +68,162 @@ func (c CacheChecker) ProcessFile(hashChannel chan *VtRecord,
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	line := ""
-	tempHashes := make([]string, c.checkLimit)
+	//batchData := BatchData{}
+	tempHashes := make([]string, 0, cc.checkLimit)
 	for scanner.Scan() {
+		fmt.Println("New line")
 		line = strings.TrimSpace(scanner.Text())
 		if len(line) == 0 {
 			continue
 		}
 
-		vtRecord, err := isHashInDatabase(stmtMd5, stmtSha256, line)
-		if err != nil {
-			fmt.Println(err.Error())
+		hashType := GetHashTypeFromLength(line)
+		if hashType == HASH_UNKNOWN {
 			continue
 		}
 
-		if mode == MODE_CACHE || mode == MODE_LIVE {
-			tempHashes = append(tempHashes, line)
-			if len(tempHashes) >= c.checkLimit {
-				batchCheck := BatchCheck{}
-				//batchCheck := new(BatchCheck)
-				batchCheck.Add(tempHashes)
-				tempHashes = make([]string, c.checkLimit)
+		vtRecord, err := isHashInDatabase(stmtMd5, stmtSha256, line)
+		if err != nil {
+			if strings.Contains(err.Error(), "no rows in result set") == false {
+				fmt.Println(err.Error())
+				continue
+			} else {
+				fmt.Println("Hash not identified in database")
+				if mode == MODE_CACHE || mode == MODE_LIVE {
+					fmt.Println("Adding temp hash")
+					tempHashes = append(tempHashes, line)
+					fmt.Println("got here2")
+					if len(tempHashes) >= cc.checkLimit {
+						fmt.Println("got here4")
+						batchData := BatchData{}
+						//batchCheck := new(BatchCheck)
+						batchData.Add(tempHashes)
+						tempHashes = make([]string, cc.checkLimit)
+						cc.waitGroup.Add(1)
+						cc.tasksQueue <- batchData
+					}
 
-				c.workQueue <- batchCheck
+					fmt.Println("got here1")
+				} else {
+					// The hash wasn't in database so just return a result
+					vt := new(VtRecord)
+					if hashType == HASH_MD5 {
+						vt.Md5 = line
+					} else {
+						vt.Sha256 = line
+					}
+					vt.ResponseCode = 0
+
+					// Hash identified? Callback
+					hashChannel <-vt
+				}
+				fmt.Println("got here3")
+
 			}
 		} else {
 			// Hash identified? Callback
 			hashChannel <-vtRecord
 		}
 	}
-}
 
-func (c CacheChecker)startDispatcher(workerCount int,
-									 databasePath string,
-									 apiKey string) {
+	fmt.Println("Completed all checks")
 
-	// First, initialize the channel we are going to but the workers' work channels into.
-	c.workerQueue = make(chan chan BatchCheck, workerCount)
+	fmt.Println(len(tempHashes))
 
-	// Now, create all of our workers.
-	for i := 0; i < workerCount; i++ {
-		fmt.Println("Starting worker", i+1)
-		worker := NewVtChecker(i+1, databasePath, apiKey, c.workerQueue)
-		worker.Start()
+	// Have we reached the end and still have a partially filled slice?
+	if len(tempHashes) > 0 {
+		batchData := BatchData{}
+		batchData.Add(tempHashes)
+		tempHashes = nil
+		cc.waitGroup.Add(1)
+		cc.tasksQueue <- batchData
 	}
 
-	go func() {
-		for {
-			//fmt.Println("LOOPING")
-			select {
-			case work := <-c.workQueue:
-				//fmt.Println("Received work requeust")
-				go func() {
-					worker := <-c.workerQueue
+	// Wait for all of the tasks to get a result
+	cc.waitGroup.Wait()
 
-					//fmt.Println("Dispatching work request")
-					worker <- work
-				}()
-			}
-		}
-	}()
+	cc.quit <- true
+	close(cc.tasksQueue)
+	close(cc.resultsQueue)
+	close(cc.workerQueue)
 }
+
+func (cc *CacheChecker) startDispatcher(workerCount int,
+									  databasePath string,
+									  apiKey string) {
+	cc.workerQueue = make(chan *VtChecker, workerCount)
+	cc.tasksQueue = make(chan BatchData)
+	cc.resultsQueue = make(chan govt.FileReportResults)
+	cc.quit = make(chan bool, 1)
+
+	fmt.Println("Starting workers")
+
+	// Create all of our workers.
+	for i := 0; i < workerCount; i++ {
+		fmt.Println("Starting worker", i + 1)
+		cc.workerQueue <- NewVtChecker(i + 1,
+									   apiKey,
+									   databasePath,
+									   cc.workerQueue,
+									   cc.resultsQueue)
+	}
+
+	go cc.manage()
+}
+
+//
+func (cc *CacheChecker) manage () {
+	fmt.Println("**manage.start")
+	for {
+		fmt.Println("**manage.loop")
+		select {
+		case task := <-cc.tasksQueue:
+			fmt.Println("**task")
+			fmt.Println(len(task.Hashes))
+			go cc.dispatch(task)
+		case result := <-cc.resultsQueue:
+			fmt.Println("**result")
+			go cc.process(result)
+
+		case <-cc.quit:
+			fmt.Println("**quit")
+			cc.quit <- true
+			return
+		}
+	}
+}
+
+
+func (cc *CacheChecker) dispatch(batch BatchData) {
+	fmt.Println("Dispatching task:")
+	select {
+	case worker := <-cc.workerQueue:
+		fmt.Println("**task2")
+		fmt.Println(len(batch.Hashes))
+		go worker.Work(batch)
+	case <-cc.quit:
+		cc.quit <- true
+		return
+	}
+}
+
+//
+func (c *CacheChecker) process(ftr govt.FileReportResults) {
+	fmt.Println("Got results:")
+	//fmt.Println(ftr)
+	for _, fr := range ftr {
+		fmt.Println(fr.Md5)
+	}
+	c.waitGroup.Done()
+}
+
 
 //
 func isHashInDatabase(stmtMd5 *sql.Stmt,
 					  stmtSha265 *sql.Stmt,
 					  hash string) (*VtRecord, error) {
+
+	fmt.Println(hash)
 
 	vtRecord := new(VtRecord)
 	if len(hash) == 32 {
@@ -166,12 +261,5 @@ func isHashInDatabase(stmtMd5 *sql.Stmt,
 
 func (c CacheChecker) ProcessHash(hash string, mode int) {
 
-}
-
-//
-func (b BatchCheck) Add(hashes []string) {
-	for _, hash := range hashes {
-		b.Hashes = append(b.Hashes, hash)
-	}
 }
 

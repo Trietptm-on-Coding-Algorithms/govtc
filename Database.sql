@@ -1,4 +1,4 @@
-CREATE TABLE `hashes` (
+CREATE TABLE `vthashes` (
 	`id`	INTEGER PRIMARY KEY AUTOINCREMENT,
 	`md5`	TEXT,
 	`sha256`	TEXT,

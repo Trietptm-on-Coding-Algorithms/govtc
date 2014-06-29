@@ -10,8 +10,8 @@ import (
 	_"github.com/williballenthin/govt"
 	_"github.com/mattn/go-sqlite3"
 	"github.com/voxelbrain/goptions"
-	"github.com/woanware/govtc/govtc"
 	"github.com/woanware/go.util"
+	"github.com/woanware/govtc/govtc"
 	"path"
 )
 
