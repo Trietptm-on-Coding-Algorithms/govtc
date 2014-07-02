@@ -13,7 +13,7 @@ import (
 )
 
 type CacheChecker struct {
-	apiKey      	string
+	apiKeys      	[]string
 	databasePath    string
 	checkLimit      int
 	tasksQueue      chan BatchData
@@ -21,14 +21,15 @@ type CacheChecker struct {
 	workerQueue     chan *VtChecker
 	quit 			chan bool
 	waitGroup       sync.WaitGroup
+	db				*sql.DB
 }
 
 const SQL_SELECT_MD5 string = "SELECT id, md5, sha256, positives, total, permalink, responsecode, scans, scandate, updatedate from vthashes where md5 = ?"
 const SQL_SELECT_SHA256 string = "SELECT id, md5, sha256, positives, total, permalink, responsecode, scans, scandate, updatedate from vthashes where sha256 = ?"
 
-func NewCacheChecker(apiKey string, databasePath string) *CacheChecker {
+func NewCacheChecker(apiKeys []string, databasePath string) *CacheChecker {
 	c := new(CacheChecker)
-	c.apiKey = apiKey
+	c.apiKeys = apiKeys
 	c.databasePath = databasePath
 	c.checkLimit = 4
 	return c
@@ -37,26 +38,28 @@ func NewCacheChecker(apiKey string, databasePath string) *CacheChecker {
 func (cc *CacheChecker) ProcessFile(hashChannel chan *VtRecord,
 								    inputFile string,
 								    mode int) {
-	cc.startDispatcher(2, cc.databasePath, cc.apiKey)
+	cc.startDispatcher()
+	cc.manage()
 
 	fmt.Println("Opening database: " + cc.databasePath)
 
 	// Open the database containing our VT data
-	db, err := sql.Open("sqlite3", cc.databasePath)
-	defer db.Close()
+	var err error
+	cc.db, err = sql.Open("sqlite3", cc.databasePath)
+	defer cc.db.Close()
 	if err != nil {
 		// Error? callback?
 		return
 	}
 
 	// Prepare the SQL statements
-	stmtMd5, err := db.Prepare(SQL_SELECT_MD5)
+	stmtMd5, err := cc.db.Prepare(SQL_SELECT_MD5)
 	if err != nil {
 		fmt.Println("MD5 statement error: " + err.Error())
 	}
 	defer stmtMd5.Close()
 
-	stmtSha256, err := db.Prepare(SQL_SELECT_SHA256)
+	stmtSha256, err := cc.db.Prepare(SQL_SELECT_SHA256)
 	if err != nil {
 		fmt.Println("SHA256 statement error: " + err.Error())
 	}
@@ -146,49 +149,46 @@ func (cc *CacheChecker) ProcessFile(hashChannel chan *VtRecord,
 	close(cc.workerQueue)
 }
 
-func (cc *CacheChecker) startDispatcher(workerCount int,
-									  databasePath string,
-									  apiKey string) {
-	cc.workerQueue = make(chan *VtChecker, workerCount)
+func (cc *CacheChecker) startDispatcher() {
+	cc.workerQueue = make(chan *VtChecker, len(cc.apiKeys))
 	cc.tasksQueue = make(chan BatchData)
 	cc.resultsQueue = make(chan govt.FileReportResults)
 	cc.quit = make(chan bool, 1)
 
 	fmt.Println("Starting workers")
 
-	// Create all of our workers.
-	for i := 0; i < workerCount; i++ {
-		fmt.Println("Starting worker", i + 1)
-		cc.workerQueue <- NewVtChecker(i + 1,
-									   apiKey,
-									   databasePath,
+	for index, apikey := range cc.apiKeys {
+		fmt.Println(fmt.Sprintf("Starting worker: %d", index + 1))
+		cc.workerQueue <- NewVtChecker(index + 1,
+									   apikey,
+								       cc.databasePath,
 									   cc.workerQueue,
 									   cc.resultsQueue)
 	}
-
-	go cc.manage()
 }
 
 //
 func (cc *CacheChecker) manage () {
-	fmt.Println("**manage.start")
-	for {
-		fmt.Println("**manage.loop")
-		select {
-		case task := <-cc.tasksQueue:
-			fmt.Println("**task")
-			fmt.Println(len(task.Hashes))
-			go cc.dispatch(task)
-		case result := <-cc.resultsQueue:
-			fmt.Println("**result")
-			go cc.process(result)
+	go func() {
+		fmt.Println("**manage.start")
+		for {
+			fmt.Println("**manage.loop")
+			select {
+			case task := <-cc.tasksQueue:
+				fmt.Println("**task")
+				fmt.Println(len(task.Hashes))
+				go cc.dispatch(task)
+			case result := <-cc.resultsQueue:
+				fmt.Println("**result")
+				go cc.process(result)
 
-		case <-cc.quit:
-			fmt.Println("**quit")
+			case <-cc.quit:
+				fmt.Println("**quit")
 			cc.quit <- true
-			return
+				return
+			}
 		}
-	}
+	}()
 }
 
 
@@ -206,13 +206,16 @@ func (cc *CacheChecker) dispatch(batch BatchData) {
 }
 
 //
-func (c *CacheChecker) process(ftr govt.FileReportResults) {
+func (cc *CacheChecker) process(ftr govt.FileReportResults) {
 	fmt.Println("Got results:")
 	//fmt.Println(ftr)
 	for _, fr := range ftr {
 		fmt.Println(fr.Md5)
 	}
-	c.waitGroup.Done()
+
+	//cc.db.Query("SELECT sha256, positives, total, permalink, responsecode, scans, scandate, updatedate FROM vthashes WHERE md5=?", )
+
+	cc.waitGroup.Done()
 
 
 //	if (report.ResponseCode == 0)

@@ -20,7 +20,7 @@ import (
 type Options struct {
 	Hash   		string        	`goptions:"-h, --hash, description='A single hash (MD5 or SHA256)'"`
 	File   		string        	`goptions:"-f, --file, description='File containing hashes'"`
-	ApiKey   	string        	`goptions:"-a, --apikey, description='API key for VT REST API'"`
+	ApiKey   	[]string        `goptions:"-a, --apikey, description='API key for VT REST API'"`
 	Database   	string   		`goptions:"-d, --database, description='Path to database directory (defaults to current directory)'"`
 	Delimiter   string   		`goptions:"-l, --delimiter, description='The delimiter used for the export. Defaults to \",\"'"`
 	Output   	string   		`goptions:"-o, --output, obligatory, description='Output directory (use \".\" for the current dir)'"`
@@ -61,7 +61,7 @@ func main() {
 			return
 		}
 
-		options.ApiKey = ReadApiKey(options.configFile)
+		options.ApiKey = readApiKeys(options.configFile)
 
 		if len(options.ApiKey) == 0 {
 			fmt.Println("The config file does not contain an API key")
@@ -121,7 +121,7 @@ func main() {
 	fmt.Println( usr.HomeDir )*/
 }
 
-func ReadHashes(hashChannel chan *govtc.VtRecord){
+func readHashes(hashChannel chan *govtc.VtRecord){
 	go func() {
 		for {
 			vtRecord := <-hashChannel
@@ -132,15 +132,21 @@ func ReadHashes(hashChannel chan *govtc.VtRecord){
 }
 
 // Reads the first line from the specified file
-func ReadApiKey(configFilePath string) string {
+func readApiKeys(configFilePath string) []string {
 	file, _ := os.Open(configFilePath)
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
-	apiKey := ""
+	apiKeys := make([]string, 0)
 	for scanner.Scan() {
-		apiKey = scanner.Text()
-		break
+		temp := scanner.Text()
+		temp = strings.TrimSpace(temp)
+
+		if len(temp) == 0 {
+			break
+		}
+
+		apiKeys = append(apiKeys, temp)
 	}
 
-	return strings.TrimSpace(apiKey)
+	return apiKeys
 }
